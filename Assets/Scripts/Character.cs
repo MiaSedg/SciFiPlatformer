@@ -1,5 +1,11 @@
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Xml;
+using Unity.VisualScripting;
+using UnityEditor;
 using UnityEngine;
+using System;
+using Helper;
  namespace game
 { 
     public enum ERotationBehavior
@@ -7,7 +13,12 @@ using UnityEngine;
         OrientRotationToMovement,
         UseControlRotation
     }
-
+    public enum SurfaceState
+    {
+        OnGround,
+        OnSurface,
+        InAir
+    }
 
     [System.Serializable]
     public record RotationSettings
@@ -46,14 +57,23 @@ using UnityEngine;
     [System.Serializable]
     public record SurfaceCollisions
     {
+        // make some logic that ensures on no decleartion of surface collision settings defualt settings are made for 
+        // something that can check if the character is grounded
+
+        public Vector2 characterColliderScale;
+        public SurfaceState surfaceState;
+        public SubstateMachine substates;
+       
         public LayerMask surfaceLayers;
-        public int numOfBoxes;
-        public Vector3[] boxCastPositions;
-        public Vector3[] boxCastScale;
-        public Vector3[] surfaceNormals;
-        public Dictionary<string,int> boxNames = new Dictionary<string,int>();
+        public int numOfBoxes = 1; // arr max
+        public Vector3[] boxCastPositions = new Vector3[] { Vector3.zero };
+        public Vector3[] boxCastScale = new Vector3[] { Vector3.zero }; 
+        public Vector3[] boxRotations = new Vector3[] { Vector3.zero }; 
+        public Vector3[] surfaceNormals = new Vector3[] { Vector3.zero };
+
     }
-    // ^can likely do similiar set up for hit box set up^
+
+    // ^can likely do: similiar set up for hit box set up^
 
     public class Character : MonoBehaviour
     {
@@ -73,26 +93,29 @@ using UnityEngine;
 
         private Vector2 controlRotation; //X(pitch), Y(yaw)
         private Vector3 movementInput;
-        private Vector3 lastMovementInput;
+        private Vector3 lastMovementInput; 
         private bool hasMovementInput;
         private bool jumpInput;
-        private bool isGrounded;
+        private bool justWalkedOffLedge;
+
+        private RaycastHit hit;
+        private (int, int) currentSurface;
+        private (int, int) lastSurface;
 
         public Vector3 velocity => characterController.velocity;
         public Vector3 horizontalVelocity => characterController.velocity.SetY(0.0f);
         public Vector3 verticalVelocity => characterController.velocity.Multiply(0.0f, 1.0f, 0.0f);
-
+        public Vector2 characterColliderScale => new Vector2(characterController.radius, characterController.height); 
+        // should turn this into a static var
 
         private void Awake()
         {
-            controller.Init();
-            controller.character = this;
-
             characterController = gameObject.GetComponent<CharacterController>();
+            controller.Init(this); 
             //characterAnimator = gameObject.GetComponent<CharacterAnimator>();
 
         }
-
+ 
         private void Update()
         {
             controller.OnCharacterUpdate();
@@ -106,6 +129,15 @@ using UnityEngine;
 
         }
 
+        private void OnDrawGizmos()
+        {
+            for(int i = 0; i < surfaceCollisions.numOfBoxes; i++)
+            {
+                Gizmos.DrawRay(transform.position, surfaceCollisions.boxRotations[i].normalized * 1f); 
+            } 
+        } 
+
+        // All functions to local functions to run on ficked update, used to pass delta time to all these functions 
         private void Tick(float deltaTime)
         {
             UpdateHorizontalSpeed(deltaTime);
@@ -114,8 +146,8 @@ using UnityEngine;
             Vector3 movement = horizontalSpeed * GetMovementInput() + verticalSpeed * Vector3.up;
             characterController.Move(movement * deltaTime);
 
-            OrientToTargetRotation(movement.SetY(0.0f), deltaTime); 
-            UpdateSurfaces(); 
+            OrientToTargetRotation(movement.SetY(0.0f), deltaTime);
+            UpdateSurfaces();
 //            _characterAnimator.UpdateState();
         }
 
@@ -165,57 +197,83 @@ using UnityEngine;
             this.controlRotation = new Vector2(pitchAngle, yawAngle); 
         }
 
-
-
+ 
+        // connector function that takes player controller changes and pipes them to the local variables 
         private void UpdateSurfaces()
         {
-            justWalkedOffEdge = false;
-           // need to figure out a good way to consitently check surfaces
-           // and possibly a good way to change between which surface collission box is the ground checker
-           // could have an orientation function that is always pointing up which what helps decide which boxes are facing down when the character
-           // may rotate
 
-            // have to see if current Check Surfaces function even works
+
+            CheckSurfaces();
         }
-
-        private RaycastHit hit;
-        private void CheckSurfaces()
-        {
+        private bool CheckSurfaces() 
+        { 
             Vector3 direction;
-            for(int i = 0; i < surfaceCollisions.numOfBoxes; i++)
-            {
-                direction = transform.position - surfaceCollisions.boxCastPositions[i]; 
-                Physics.BoxCast(surfaceCollisions.boxCastPositions[i], surfaceCollisions.boxCastScale[i], direction, out hit);
-                surfaceCollisions.surfaceNormals[i] = hit.normal; 
+            Vector3 position;
+            Quaternion localRotation;
+            bool gotHit = false;
+            for (int i = 0; i < surfaceCollisions.numOfBoxes; i++)
+            { 
+                // quaternion point rotation
+                position = surfaceCollisions.boxCastPositions[i];
+                localRotation = new Quaternion(position.x, position.y, position.z, 0);
+                localRotation = transform.rotation * localRotation * Quaternion.Inverse(transform.rotation); 
+                direction = new Vector3(localRotation.x, localRotation.y, localRotation.z); 
+                surfaceCollisions.boxRotations[i] = direction;
+
+                // BoxCast with SurfaceCollision Settings based on Character local rotation
+                gotHit = true == Physics.BoxCast(transform.position, surfaceCollisions.boxCastScale[i], direction, out hit, transform.rotation, 1f, surfaceCollisions.surfaceLayers); 
+                surfaceCollisions.surfaceNormals[i] = hit.normal;
+
+                // update surface info
+                if (gotHit)
+                {
+                    if (currentSurface.Item2 != lastSurface.Item2)
+                        lastSurface = currentSurface;
+                    else
+                    {
+                        currentSurface.Item1 = i;
+                        currentSurface.Item2 = hit.collider.GetHashCode();
+                    }
+                }
             }
 
+            return gotHit;
         }
 
+
+        // State machine needs a way to inject custom substates 
+            // need to just have to change select weight variables likely
+            // the controller can have its unique local state machine which changes the weights 
         private void UpdateVerticalSpeed(float deltaTime) 
         {
-            if(isGrounded)
+            // states updated by controller settings 
+            switch (surfaceCollisions.surfaceState)
             {
-                verticalSpeed = -gravitySettings.groundedGravity;
+                case (SurfaceState.OnGround):
+                    verticalSpeed = -gravitySettings.groundedGravity; 
+                    if (jumpInput)
+                    {
+                        verticalSpeed = movementSettings.jumpSpeed;
+                    }
+                    break;
 
-                if (jumpInput)
-                {
-                    verticalSpeed = movementSettings.jumpSpeed;
-                } 
-            }
-            else
-            {
-                // if falling
-                if(!jumpInput && verticalSpeed > 0.0f)
-                {
-                    verticalSpeed = Mathf.MoveTowards(verticalSpeed, -gravitySettings.maxFallSpeed, movementSettings.jumpAbortSpeed * deltaTime); 
-                }
-                else if(justWalkedOffEdge)
-                {
-                    verticalSpeed = 0.0f;
-                }
+                case (SurfaceState.OnSurface):
 
-                verticalSpeed = Mathf.MoveTowards(verticalSpeed, -gravitySettings.maxFallSpeed, gravitySettings.gravity *  deltaTime);
-            }
+
+                    break;
+
+                case (SurfaceState.InAir):
+                    if(!jumpInput && verticalSpeed > 0.0f)
+                    {
+                        verticalSpeed = Mathf.MoveTowards(verticalSpeed, -gravitySettings.maxFallSpeed, movementSettings.jumpAbortSpeed * deltaTime); 
+                    }
+                    else if(justWalkedOffEdge)
+                    {
+                        verticalSpeed = 0.0f;
+                    } 
+                    verticalSpeed = Mathf.MoveTowards(verticalSpeed, -gravitySettings.maxFallSpeed, gravitySettings.gravity *  deltaTime); 
+                    break;
+            } 
         }
         private void UpdateHorizontalSpeed(float deltaTIme)
         {
@@ -233,6 +291,9 @@ using UnityEngine;
 
         private void OrientToTargetRotation(Vector3 horizontalMovement, float deltaTime) 
         {
+
+            // might have to add the SurfaceState switch to change a variable for this function 
+
             if (rotationSettings.rotationBehavior == ERotationBehavior.OrientRotationToMovement && horizontalMovement.sqrMagnitude > 0.0f)
             {
                 float rotationSpeed = Mathf.Lerp(
@@ -247,6 +308,7 @@ using UnityEngine;
                 transform.rotation = targetRotation;
             }
         }
+
 
 
 

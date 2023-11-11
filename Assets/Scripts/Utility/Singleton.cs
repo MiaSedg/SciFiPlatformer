@@ -2,7 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
-namespace game
+namespace Helper
 {
     public abstract class Singleton<T> : MonoBehaviour where T : Singleton<T> 
     {
@@ -13,21 +13,16 @@ namespace game
             get
             {
                 if (instance == null)
-                {
-                    
+                { 
                     instance = FindObjectOfType<T>();
                     if(instance == null)
                     {
                         GameObject singletonObj = new GameObject();
-                        instance = singletonObj.AddComponent<T>();
-
-                        DontDestroyOnLoad(singletonObj);
-                        
+                        instance = singletonObj.AddComponent<T>(); 
+                        DontDestroyOnLoad(singletonObj); 
                     }
                     else
-                    {
                         instance.Init();
-                    }
                 }
                 return instance;
             }

@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace game
+namespace Helper
 {
     public static class Util
     {

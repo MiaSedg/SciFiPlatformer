@@ -1,6 +1,6 @@
 using UnityEngine;
 
-namespace NaughtyCharacter
+namespace game
 {
     public class SpringArm : MonoBehaviour
     {
